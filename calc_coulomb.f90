@@ -4,7 +4,7 @@
 !   Version:
 !       2007-09-18  Clean this program
 !       2006-12-13  Create this program
-!
+!       2019-10-21  calc coulomb stress
 !
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 program p_calc_green
@@ -19,7 +19,7 @@ program p_calc_green
   
    integer :: ierr,size,myid
    integer :: Nt,nproc,Nt_all,master
-   parameter (nproc=64)
+   parameter (nproc=56)
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! Load input mesh data
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -573,7 +573,9 @@ subroutine calc_green_allcell(myid,Nt,arr_vertex,arr_cell,n_vertex,n_cell)
       sig33(2,3) = sig33(3,2)
 
       ! calc local stress  in Bar (0.1Mpa)
-      arr_out(j-(myid)*Nt,i) = - parm_miu/100 * dot_product(arr_cl_v2(:,3,j),matmul(sig33(:,:),arr_cl_v2(:,2,j)))
+      arr_out(j-(myid)*Nt,i) =  -parm_miu * dot_product(arr_cl_v2(:,3,j),matmul(sig33(:,:),arr_cl_v2(:,3,j)))*0.6 - parm_miu * dot_product(arr_cl_v2(:,3,j),matmul(sig33(:,:),arr_cl_v2(:,2,j)))
+      !!normal_out(j-myid*Nt,i)=    parm_miu * dot_product(arr_cl_v2(:,3,j),matmul(sig33(:,:),arr_cl_v2(:,3,j)))
+      !!coulb_out(j-myid*Nt,i) = arr_out(j-(myid)*Nt,i)  - normal_out(j-myid*Nt,i) * 0.6;
 
     end do
   end do
@@ -581,20 +583,20 @@ subroutine calc_green_allcell(myid,Nt,arr_vertex,arr_cell,n_vertex,n_cell)
  write(cTemp,*) myid
  write(*,*) cTemp
 
-  open(14,file='trigreen_'//trim(adjustl(cTemp))//'.bin', form='unformatted',access='stream')
+  open(14,file='tricoulb_'//trim(adjustl(cTemp))//'.txt', form='formatted',access='stream')
 !  write(14,*) n_cell, n_vertex
 
  if(myid==0)then 
- open(22,file='position.bin',form='unformatted',access='stream')
+ open(22,file='position.txt',form='formatted',access='stream')
  
   do j=1,n_cell
-    write(22) arr_co(1,j), arr_co(2,j), arr_co(3,j)
+    write(22,*) arr_co(1,j), arr_co(2,j), arr_co(3,j)
   end do
 close(22)
  endif
 
 do i=1,Nt
-  write(14) arr_out(i,:)
+  write(14,*) arr_out(i,:)
 end do
 close(14)
 
