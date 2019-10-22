@@ -4,7 +4,7 @@
 !   Version:
 !       2007-09-18  Clean this program
 !       2006-12-13  Create this program
-!
+!       2019-10-21  calc coulomb stress
 !
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 program p_calc_green
@@ -16,10 +16,11 @@ program p_calc_green
   real(8),DIMENSION(:,:),ALLOCATABLE  ::  arr_vertex
   integer,DIMENSION(:,:),ALLOCATABLE  ::  arr_edge
   integer,DIMENSION(:,:),ALLOCATABLE  ::  arr_cell
+  real(8),Dimension(:),allocatable    ::  arr_slp
   
    integer :: ierr,size,myid
    integer :: Nt,nproc,Nt_all,master
-   parameter (nproc=64)
+   parameter (nproc=28)
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! Load input mesh data
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -31,11 +32,11 @@ program p_calc_green
 !!! load n_vertex,n_vertex,n_cell from fname
      call load_name(fname,n_vertex,n_edge,n_cell)
 
-     allocate(arr_vertex(n_vertex,3),arr_edge(n_edge,2),arr_cell(n_cell,3))
+     allocate(arr_vertex(n_vertex,3),arr_edge(n_edge,2),arr_cell(n_cell,3),arr_slp(n_cell))
 
 !!!!! load arr_vertex,arr_edge,arr_cell from fname
      call load_gts(fname,n_vertex,n_edge,&
-                n_cell,arr_vertex,arr_edge,arr_cell)
+                n_cell,arr_vertex,arr_edge,arr_cell,arr_slp)
    
 write(*,*) myid
 
@@ -52,9 +53,9 @@ end if
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! for all element's center point as op
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    call calc_green_allcell(myid,Nt,arr_vertex,arr_cell,n_vertex,n_cell)
+    call calc_green_allcell(myid,Nt,arr_vertex,arr_cell,n_vertex,n_cell,arr_slp)
     
-    deallocate(arr_vertex,arr_edge,arr_cell) 
+    deallocate(arr_vertex,arr_edge,arr_cell,arr_slp) 
  
    call MPI_barrier(MPI_COMM_WORLD,ierr)
    call MPI_finalize(ierr)
@@ -76,13 +77,13 @@ end subroutine
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-subroutine load_gts(fname,n_vertex,n_edge,n_cell,arr_vertex,arr_edge,arr_cell)
+subroutine load_gts(fname,n_vertex,n_edge,n_cell,arr_vertex,arr_edge,arr_cell,arr_slp)
     implicit none
     
     character(*)               ::  fname
     integer                     ::  i
     integer                     :: n_vertex,n_edge,n_cell
-    real(8)  :: arr_vertex(n_vertex,3)
+    real(8)  :: arr_vertex(n_vertex,3),arr_slp(n_cell)
     integer  ::  arr_edge(n_edge,2)
     integer  ::  arr_cell(n_cell,3) 
  
@@ -108,6 +109,11 @@ subroutine load_gts(fname,n_vertex,n_edge,n_cell,arr_vertex,arr_edge,arr_cell)
     do i=1, n_cell
         read(10, *) arr_cell(i, 1), arr_cell(i, 2), arr_cell(i, 3)
     end do
+
+    do i=1, n_cell
+        read(10, *)  arr_slp(i)
+    end do
+
     
     CLOSE(10)
 return
@@ -477,7 +483,7 @@ end subroutine
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-subroutine calc_green_allcell(myid,Nt,arr_vertex,arr_cell,n_vertex,n_cell)
+subroutine calc_green_allcell(myid,Nt,arr_vertex,arr_cell,n_vertex,n_cell,arr_slp)
  use m_calc_green,only: parm_nu,parm_l,parm_miu,vpl1,vpl2,PI,ZERO 
  implicit none
     
@@ -505,7 +511,7 @@ subroutine calc_green_allcell(myid,Nt,arr_vertex,arr_cell,n_vertex,n_cell)
                           c_local2(3, 3), c_local_v2(9)
   real(8),allocatable :: arr_co(:,:),arr_trid(:,:),arr_cl_v2(:,:,:)
   real(8),allocatable :: arr_out(:,:),a_ss(:),a_ds(:),a_op(:)
-  real(8)             :: arr_vertex(n_vertex,3)
+  real(8)             :: arr_vertex(n_vertex,3),arr_slp(n_cell)
   integer             :: arr_cell(n_cell,3)
 
   vpl(1:3) = 1.d0
@@ -555,8 +561,8 @@ subroutine calc_green_allcell(myid,Nt,arr_vertex,arr_cell,n_vertex,n_cell)
   do j=(myid)*Nt+1,(myid)*Nt+Nt
     write(6,*)j
     do i=1, n_cell
-      ! calculate strain gradients
-      call dstuart (parm_nu,arr_co(:,j),arr_trid(:,i),ss,ds,op, u, t)
+      ! calculate strain gradients with cumulative slip from SeisSol
+      call dstuart (parm_nu,arr_co(:,j),arr_trid(:,i),ss,arr_slp(i),op, u, t)
             
       ! calc stress
       sig33(3,3) = l_miu * ( t(1) + t(5) + t(9) ) 
@@ -573,7 +579,9 @@ subroutine calc_green_allcell(myid,Nt,arr_vertex,arr_cell,n_vertex,n_cell)
       sig33(2,3) = sig33(3,2)
 
       ! calc local stress  in Bar (0.1Mpa)
-      arr_out(j-(myid)*Nt,i) = - parm_miu/100 * dot_product(arr_cl_v2(:,3,j),matmul(sig33(:,:),arr_cl_v2(:,2,j)))
+      arr_out(j-(myid)*Nt,i) =  -parm_miu * dot_product(arr_cl_v2(:,3,j),matmul(sig33(:,:),arr_cl_v2(:,3,j)))*0.6 - parm_miu * dot_product(arr_cl_v2(:,3,j),matmul(sig33(:,:),arr_cl_v2(:,2,j)))
+      !!normal_out(j-myid*Nt,i)=    parm_miu * dot_product(arr_cl_v2(:,3,j),matmul(sig33(:,:),arr_cl_v2(:,3,j)))
+      !!coulb_out(j-myid*Nt,i) = arr_out(j-(myid)*Nt,i)  - normal_out(j-myid*Nt,i) * 0.6;
 
     end do
   end do
@@ -581,20 +589,20 @@ subroutine calc_green_allcell(myid,Nt,arr_vertex,arr_cell,n_vertex,n_cell)
  write(cTemp,*) myid
  write(*,*) cTemp
 
-  open(14,file='trigreen_'//trim(adjustl(cTemp))//'.bin', form='unformatted',access='stream')
+  open(14,file='tricoulb_'//trim(adjustl(cTemp))//'.txt', form='formatted',access='stream')
 !  write(14,*) n_cell, n_vertex
 
  if(myid==0)then 
- open(22,file='position.bin',form='unformatted',access='stream')
+ open(22,file='position.txt',form='formatted',access='stream')
  
   do j=1,n_cell
-    write(22) arr_co(1,j), arr_co(2,j), arr_co(3,j)
+    write(22,*) arr_co(1,j), arr_co(2,j), arr_co(3,j)
   end do
 close(22)
  endif
 
 do i=1,Nt
-  write(14) arr_out(i,:)
+  write(14,*) arr_out(i,:)
 end do
 close(14)
 
